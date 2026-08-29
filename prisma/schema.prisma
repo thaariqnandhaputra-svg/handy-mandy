@@ -1,0 +1,173 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  CUSTOMER
+  TECHNICIAN
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  TECHNICIAN_ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  MIDTRANS
+  STRIPE
+  MANUAL
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  phone        String?  @unique
+  name         String
+  passwordHash String
+  role         Role     @default(CUSTOMER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orders            Order[]            @relation("CustomerOrders")
+  technicianProfile TechnicianProfile?
+  locations         Location[]
+  sessions          Session[]
+
+  @@index([email])
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model TechnicianProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  specialties String   // comma-separated specialties (e.g. "CCTV, Smart Locks, Hubs")
+  bio         String?
+  isVerified  Boolean  @default(false)
+  isAvailable Boolean  @default(true)
+  serviceCity String?
+  createdAt   DateTime @default(now())
+
+  assignedOrders Order[] @relation("TechnicianOrders")
+
+  @@index([serviceCity, isAvailable])
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  category    String
+  basePrice   Int      // In IDR, whole units, no decimals
+  imageUrl    String?
+  requiresHub Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  orderItems OrderItem[]
+
+  @@index([category, isActive])
+}
+
+model Location {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label       String?  // e.g. "Home", "Office", "Villa"
+  addressLine String
+  city        String
+  province    String
+  postalCode  String
+  lat         Float?
+  lng         Float?
+  createdAt   DateTime @default(now())
+
+  orders Order[]
+
+  @@index([userId])
+}
+
+model Order {
+  id                   String              @id @default(cuid())
+  customerId           String
+  customer             User                @relation("CustomerOrders", fields: [customerId], references: [id])
+  technicianId         String?
+  technician           TechnicianProfile?  @relation("TechnicianOrders", fields: [technicianId], references: [id])
+  locationId           String
+  location             Location            @relation(fields: [locationId], references: [id])
+
+  includeInstallation Boolean             @default(false)
+  includeHub          Boolean             @default(false)
+  installationFee     Int                 @default(0)
+  hubFee              Int                 @default(0)
+  additionalFees      Int                 @default(0)
+  subtotal            Int
+  totalAmount         Int
+  status              OrderStatus         @default(PENDING_PAYMENT)
+  scheduledDate       DateTime?
+  notes               String?
+
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  items               OrderItem[]
+  payment             Payment?
+
+  @@index([customerId, status])
+  @@index([technicianId, status])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int     @default(1)
+  unitPrice Int     // Locked unit price at booking time
+}
+
+model Payment {
+  id             String          @id @default(cuid())
+  orderId        String          @unique
+  order          Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  provider       PaymentProvider @default(MIDTRANS)
+  status         PaymentStatus   @default(PENDING)
+  amount         Int
+  snapToken      String?
+  snapRedirectUrl String?
+  transactionRef String?
+  paymentType    String?         // e.g. "bank_transfer", "qris", "credit_card"
+  paidAt         DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([orderId, status])
+}

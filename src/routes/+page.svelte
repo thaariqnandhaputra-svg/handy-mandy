@@ -13,7 +13,7 @@
 <section class="mb-10 bg-gradient-to-br from-emerald-900 via-teal-900 to-slate-900 text-white rounded-3xl p-8 sm:p-12 shadow-lg relative overflow-hidden">
   <div class="relative z-10 max-w-2xl">
     <span class="inline-block bg-emerald-500/20 text-emerald-300 text-xs font-semibold px-3 py-1 rounded-full border border-emerald-400/30 mb-4">
-      🛡️ Certified Technician Installation Guarantee
+       Certified Technician Installation Guarantee
     </span>
     <h1 class="text-3xl sm:text-5xl font-extrabold tracking-tight leading-tight mb-4">
       Upgrade your home to smart living, hassle-free.

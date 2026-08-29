@@ -1,7 +1,7 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { prisma } from '$lib/server/db';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus } from '../../../generated/prisma/client';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.user || (locals.user.role !== 'TECHNICIAN' && locals.user.role !== 'ADMIN')) {

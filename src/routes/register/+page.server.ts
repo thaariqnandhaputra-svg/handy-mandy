@@ -2,7 +2,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { prisma } from '$lib/server/db';
 import { hashPassword, createSession, SESSION_COOKIE_NAME, SESSION_DURATION_MS } from '$lib/server/auth';
-import { Role } from '@prisma/client';
+import { Role } from '../../generated/prisma/client';
 import { z } from 'zod';
 
 const registerSchema = z.object({

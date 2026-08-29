@@ -2,7 +2,8 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { prisma } from '$lib/server/db';
 import { calculateOrderPricing } from '$lib/server/pricing';
-import { OrderStatus, PaymentProvider, PaymentStatus } from '@prisma/client';
+import { createMidtransTransaction } from '$lib/server/payment/midtrans';
+import { OrderStatus, PaymentProvider, PaymentStatus } from '../../../generated/prisma/client';
 import { z } from 'zod';
 
 const checkoutPayloadSchema = z.object({
@@ -34,6 +35,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
+  // Mode A: Instant Simulator Checkout
   processMockPayment: async ({ request, locals }) => {
     if (!locals.user) {
       return fail(401, { error: 'Unauthorized' });
@@ -60,7 +62,6 @@ export const actions: Actions = {
 
     const { locationId, includeInstallation, includeHub, scheduledDate, notes, items } = validation.data;
 
-    // Verify location ownership
     const location = await prisma.location.findFirst({
       where: { id: locationId, userId: locals.user.id }
     });
@@ -69,7 +70,6 @@ export const actions: Actions = {
       return fail(400, { error: 'Invalid installation location selected' });
     }
 
-    // Recalculate price server-side strictly from database
     let pricing;
     try {
       pricing = await calculateOrderPricing({
@@ -81,7 +81,6 @@ export const actions: Actions = {
       return fail(400, { error: err.message || 'Pricing calculation failed' });
     }
 
-    // Atomic transaction: Create Order + OrderItems + Mock Payment (Confirmed)
     let createdOrderId = '';
     try {
       const order = await prisma.$transaction(async (tx) => {
@@ -96,7 +95,7 @@ export const actions: Actions = {
             additionalFees: pricing.additionalFees,
             subtotal: pricing.subtotal,
             totalAmount: pricing.totalAmount,
-            status: OrderStatus.CONFIRMED, // Immediately confirmed via simulated payment
+            status: OrderStatus.CONFIRMED,
             scheduledDate: scheduledDate ? new Date(scheduledDate) : null,
             notes: notes || null,
             items: {
@@ -129,5 +128,142 @@ export const actions: Actions = {
     }
 
     throw redirect(303, `/booking/confirmation/${createdOrderId}`);
+  },
+
+  // Mode B: Midtrans Snap Checkout
+  createSnapOrder: async ({ request, locals }) => {
+    if (!locals.user) {
+      return fail(401, { error: 'Unauthorized' });
+    }
+
+    const formData = await request.formData();
+    const payloadRaw = formData.get('payload')?.toString();
+
+    if (!payloadRaw) {
+      return fail(400, { error: 'Missing booking payload' });
+    }
+
+    let parsedPayload;
+    try {
+      parsedPayload = JSON.parse(payloadRaw);
+    } catch {
+      return fail(400, { error: 'Invalid payload format' });
+    }
+
+    const validation = checkoutPayloadSchema.safeParse(parsedPayload);
+    if (!validation.success) {
+      return fail(400, { error: validation.error.errors[0].message });
+    }
+
+    const { locationId, includeInstallation, includeHub, scheduledDate, notes, items } = validation.data;
+
+    const location = await prisma.location.findFirst({
+      where: { id: locationId, userId: locals.user.id }
+    });
+
+    if (!location) {
+      return fail(400, { error: 'Invalid installation location selected' });
+    }
+
+    let pricing;
+    try {
+      pricing = await calculateOrderPricing({
+        rawItems: items,
+        includeInstallation,
+        includeHub
+      });
+    } catch (err: any) {
+      return fail(400, { error: err.message || 'Pricing calculation failed' });
+    }
+
+    let snapResult;
+    let createdOrderId = '';
+
+    try {
+      const order = await prisma.$transaction(async (tx) => {
+        const newOrder = await tx.order.create({
+          data: {
+            customerId: locals.user!.id,
+            locationId: location.id,
+            includeInstallation: pricing.includeInstallation,
+            includeHub: pricing.includeHub,
+            installationFee: pricing.installationFee,
+            hubFee: pricing.hubFee,
+            additionalFees: pricing.additionalFees,
+            subtotal: pricing.subtotal,
+            totalAmount: pricing.totalAmount,
+            status: OrderStatus.PENDING_PAYMENT,
+            scheduledDate: scheduledDate ? new Date(scheduledDate) : null,
+            notes: notes || null,
+            items: {
+              create: pricing.items.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice
+              }))
+            },
+            payment: {
+              create: {
+                provider: PaymentProvider.MIDTRANS,
+                status: PaymentStatus.PENDING,
+                amount: pricing.totalAmount
+              }
+            }
+          }
+        });
+
+        return newOrder;
+      });
+
+      createdOrderId = order.id;
+
+      // Call Midtrans Snap API
+      snapResult = await createMidtransTransaction({
+        orderId: order.id,
+        totalAmount: pricing.totalAmount,
+        customer: {
+          name: locals.user.name,
+          email: locals.user.email,
+          phone: locals.user.phone
+        },
+        items: [
+          ...pricing.items.map((i) => ({
+            id: i.productId,
+            name: i.name,
+            price: i.unitPrice,
+            quantity: i.quantity
+          })),
+          ...(pricing.installationFee > 0
+            ? [{ id: 'INSTALL_SERVICE', name: 'Professional Installation', price: pricing.installationFee, quantity: 1 }]
+            : []),
+          ...(pricing.hubFee > 0
+            ? [{ id: 'HUB_HARDWARE', name: 'Zigbee Gateway Hub Gen 3', price: pricing.hubFee, quantity: 1 }]
+            : [])
+        ]
+      });
+
+      // Save Snap token in DB
+      await prisma.payment.update({
+        where: { orderId: order.id },
+        data: {
+          snapToken: snapResult.token,
+          snapRedirectUrl: snapResult.redirectUrl
+        }
+      });
+    } catch (e) {
+      console.error('Snap order creation failed:', e);
+      return fail(500, { error: 'Failed to initiate Midtrans checkout' });
+    }
+
+    if (snapResult.redirectUrl.startsWith('/')) {
+      throw redirect(303, snapResult.redirectUrl);
+    }
+
+    return {
+      success: true,
+      orderId: createdOrderId,
+      snapToken: snapResult.token,
+      redirectUrl: snapResult.redirectUrl
+    };
   }
 };

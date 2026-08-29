@@ -1,5 +1,5 @@
 import { prisma } from '$lib/server/db';
-import type { Role } from '@prisma/client';
+import type { Role } from '../../generated/prisma/client';
 import crypto from 'crypto';
 
 export const SESSION_COOKIE_NAME = 'sh_session_token';
